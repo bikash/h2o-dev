@@ -107,7 +107,6 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
     if( !(0. < _parms._learn_rate && _parms._learn_rate <= 1.0) )
       error("_learn_rate", "learn_rate must be between 0 and 1");
   }
-  private static boolean couldBeBool(Vec v) { return v != null && v.isInt() && v.min()+1==v.max(); }
 
   // ----------------------
   private class GBMDriver extends Driver {
@@ -283,12 +282,14 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
         for( int nid=0; nid<leaf; nid++ ) {
           if( tree.node(nid) instanceof DecidedNode ) {
             DecidedNode dn = tree.decided(nid);
+            if( dn._split._col == -1 ) // No decision here, no row should have this NID now
+              continue;
             for( int i=0; i<dn._nids.length; i++ ) {
               int cnid = dn._nids[i];
               if( cnid == -1 || // Bottomed out (predictors or responses known constant)
                   tree.node(cnid) instanceof UndecidedNode || // Or chopped off for depth
                   (tree.node(cnid) instanceof DecidedNode &&  // Or not possible to split
-                   ((DecidedNode)tree.node(cnid))._split.col()==-1) )
+                   ((DecidedNode)tree.node(cnid))._split._col==-1) )
                 dn._nids[i] = new GBMLeafNode(tree,nid).nid(); // Mark a leaf here
             }
             // Handle the trivial non-splitting tree
@@ -313,14 +314,16 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
         final DTree tree = ktrees[k];
         if( tree == null ) continue;
         for( int i=0; i<tree._len-leafs[k]; i++ ) {
-          double g = Math.abs(gp._gss[k][i]) < 1e-15 // Constant response?
-            ? (gp._rss[k][i]==0?0:1000) // Cap (exponential) learn, instead of dealing with Inf
-            : _parms._learn_rate*m1class*gp._rss[k][i]/gp._gss[k][i];
-          assert !Double.isNaN(g);
-          assert !Double.isInfinite(g);
-          assert !Float.isNaN((float)g);
-          assert !Float.isInfinite((float)g);
-          ((LeafNode)tree.node(leafs[k]+i))._pred = (float)g;
+          float gf;
+          if( gp._gss[k][i]==0 ) {
+            if( gp._cts[k][i]!=0 ) // bad situation: test was made but no rows went down some path
+              throw H2O.unimpl();
+            gf = gp._rss[k][i]==0 ? 0 : 1000; // Cap (exponential) learn, instead of dealing with Inf
+          } else {
+            gf = (float)(_parms._learn_rate * m1class * gp._rss[k][i] / gp._gss[k][i]);
+          }
+          assert !Float.isNaN(gf) && !Float.isInfinite(gf);
+          ((LeafNode) tree.node(leafs[k] + i))._pred = gf;
         }
       }
 
@@ -370,10 +373,12 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
       double _rss[/*tree/klass*/][/*tree-relative node-id*/];
       // Per leaf: multinomial: sum(|res|*1-|res|), gaussian: sum(1), bernoulli: sum((y-res)*(1-y+res))
       double _gss[/*tree/klass*/][/*tree-relative node-id*/];
+      int _cts[/*tree/klass*/][/*tree-relative node-id*/];
       GammaPass(DTree trees[], int leafs[], boolean isBernoulli) { _leafs=leafs; _trees=trees; _isBernoulli = isBernoulli; }
       @Override public void map( Chunk[] chks ) {
         _gss = new double[_nclass][];
         _rss = new double[_nclass][];
+        _cts = new int   [_nclass][];
         final Chunk resp = chk_resp(chks); // Response for this frame
 
         // For all tree/klasses
@@ -385,6 +390,7 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
           // A leaf-biased array of all active Tree leaves.
           final double gs[] = _gss[k] = new double[tree._len-leaf];
           final double rs[] = _rss[k] = new double[tree._len-leaf];
+          final int    cs[] = _cts[k] = new int   [tree._len-leaf];
           final Chunk nids = chk_nids(chks,k); // Node-ids  for this tree/class
           final Chunk ress = chk_work(chks,k); // Residuals for this tree/class
 
@@ -392,13 +398,15 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
           // root and the residuals should be zero.
           if( tree.root() instanceof LeafNode ) continue;
           for( int row=0; row<nids._len; row++ ) { // For all rows
-            int nid = (int)nids.at8(row);         // Get Node to decide from
+            int nid = (int)nids.at8(row);          // Get Node to decide from
             if( nid < 0 ) continue;                // Missing response
             if( tree.node(nid) instanceof UndecidedNode ) // If we bottomed out the tree
               nid = tree.node(nid)._pid;                  // Then take parent's decision
             DecidedNode dn = tree.decided(nid);           // Must have a decision point
             if( dn._split._col == -1 )                    // Unable to decide?
               dn = tree.decided(dn._pid);  // Then take parent's decision
+            if( k==418 && dn.nid()==3 )
+              System.out.println("CRUNK");
             int leafnid = dn.ns(chks,row); // Decide down to a leafnode
             assert leaf <= leafnid && leafnid < tree._len :
                     "leaf: " + leaf + " leafnid: " + leafnid + " tree._len: " + tree._len + "\ndn: " + dn;
@@ -413,18 +421,22 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
             // Compute numerator (rs) and denominator (gs) of gamma
             double res = ress.atd(row);
             double ares = Math.abs(res);
+            if( ares > 1.0 )
+              throw H2O.unimpl();
             if( _isBernoulli ) {
               double prob = resp.atd(row) - res;
               gs[leafnid-leaf] += prob*(1-prob);
             } else
               gs[leafnid-leaf] += _nclass > 1 ? ares*(1-ares) : 1;
             rs[leafnid-leaf] += res;
+            cs[leafnid-leaf] += 1;
           }
         }
       }
       @Override public void reduce( GammaPass gp ) {
         ArrayUtils.add(_gss,gp._gss);
         ArrayUtils.add(_rss,gp._rss);
+        ArrayUtils.add(_cts,gp._cts);
       }
     }
 

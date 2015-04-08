@@ -508,7 +508,7 @@ public class GBMTest extends TestUtil {
     }
   }
 
-  // HDEXDEV-194 Check reproducibility for the same # of chunks (i.e., same # of nodes) and same parameters
+  // HEXDEV-194: Check reproducibility for the same # of chunks (i.e., same # of nodes) and same parameters
   @Test public void testReprodubility() {
     Frame tfr=null;
     final int N = 5;
@@ -557,7 +557,7 @@ public class GBMTest extends TestUtil {
     for( double mse : mses ) assertEquals(mse, mses[0], 1e-15);
   }
 
-  // PUBDEV-557 Test dependency on # nodes (for small number of bins, but fixed number of chunks)
+  // PUBDEV-557: Test dependency on # nodes (for small number of bins, but fixed number of chunks)
   @Test public void testReprodubilityAirline() {
     Frame tfr=null;
     final int N = 1;
@@ -654,4 +654,33 @@ public class GBMTest extends TestUtil {
     for( double mse : mses ) assertEquals(0.0142093, mse, 1e-6);
   }
 
+  // Test uses big data and is too slow for a pre-push
+  @Test @Ignore public void testCUST_A() {
+    Frame tfr=null;
+    Scope.enter();
+    try {
+      // Load data, hack frames
+      tfr = parse_test_file("../standard/allstate/test_set.csv");
+      tfr.remove("Row_ID").remove();
+      tfr.remove("Household_ID").remove();
+      DKV.put(tfr);
+
+      // Same parms for all
+      GBMModel.GBMParameters parms = new GBMModel.GBMParameters();
+      parms._train = tfr._key;
+      parms._valid = null;
+      parms._response_column = "Blind_Model";
+      parms._ntrees = 50;
+      parms._max_depth = 5;
+      parms._loss = Family.AUTO;
+      GBM job = new GBM(parms);
+      GBMModel gbm = job.trainModel().get();
+
+      job.remove();
+      gbm.delete();
+    } finally {
+      if (tfr  != null) tfr.remove();
+      Scope.exit();
+    }
+  }
 }

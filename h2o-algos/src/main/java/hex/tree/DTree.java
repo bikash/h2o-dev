@@ -125,6 +125,7 @@ public class DTree extends Iced {
       assert _bin > 0 && _bin < h.nbins();
       assert _bs==null : "Dividing point is a bitset, not a bin#, so dont call splat() as result is meaningless";
       if( _equal == 1 ) { assert h.bins(_bin)!=0; return h.binAt(_bin); }
+      assert _equal==0; // not here for bitset splits, just range splits
       // Find highest non-empty bin below the split
       int x=_bin-1;
       while( x >= 0 && h.bins(x)==0 ) x--;
@@ -250,8 +251,10 @@ public class DTree extends Iced {
       if( _pid == -1 ) return; // skip root
       DecidedNode dn = _tree.decided(_pid);
       for( int i=0; i<dn._nids.length; i++ )
-        if( dn._nids[i]==_nid )
-          { dn._nids[i] = -1; return; }
+        if( dn._nids[i]==_nid ) {
+          dn._nids[i] = -1;
+          return;
+        }
       throw H2O.fail();
     }
 
