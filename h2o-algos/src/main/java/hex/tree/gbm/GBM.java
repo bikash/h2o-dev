@@ -317,8 +317,9 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
           float gf;
           if( gp._gss[k][i]==0 ) {
             if( gp._cts[k][i]!=0 ) // bad situation: test was made but no rows went down some path
-              throw H2O.unimpl();
-            gf = gp._rss[k][i]==0 ? 0 : 1000; // Cap (exponential) learn, instead of dealing with Inf
+              System.out.println("FRUNK");
+            //gf = gp._rss[k][i]==0 ? 0 : 100; // Cap (exponential) learn, instead of dealing with Inf
+            gf = 0f; // do not change the residual, it appears to be perfectly balanced between perfectly true and perfectly false choices
           } else {
             gf = (float)(_parms._learn_rate * m1class * gp._rss[k][i] / gp._gss[k][i]);
           }
