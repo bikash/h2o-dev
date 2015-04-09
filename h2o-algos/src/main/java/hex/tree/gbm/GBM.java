@@ -314,14 +314,11 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
         final DTree tree = ktrees[k];
         if( tree == null ) continue;
         for( int i=0; i<tree._len-leafs[k]; i++ ) {
-          float gf;
-          if( gp._gss[k][i]==0 ) {
-            if( gp._cts[k][i]!=0 ) // bad situation: test was made but no rows went down some path
-              System.out.println("FRUNK");
-            //gf = gp._rss[k][i]==0 ? 0 : 100; // Cap (exponential) learn, instead of dealing with Inf
-            gf = 0f; // do not change the residual, it appears to be perfectly balanced between perfectly true and perfectly false choices
-          } else {
-            gf = (float)(_parms._learn_rate * m1class * gp._rss[k][i] / gp._gss[k][i]);
+          float gf = (float)(_parms._learn_rate * m1class * gp._rss[k][i] / gp._gss[k][i]);
+          if( _nclass > 1 ) {   // In the multinomial case, check for very large values (which will get exponentiated later)
+            if( gp._rss[k][i]==0 && gp._gss[k][i]==0 ) gf = 0; // bad split; no rows, so do not adjust the predictions
+            else if( gf >  1e3 ) gf =  1e3f; // Cap prediction to +/- 1e3, will already overflow during Math.exp(gf)
+            else if( gf < -1e3 ) gf = -1e3f;
           }
           assert !Float.isNaN(gf) && !Float.isInfinite(gf);
           ((LeafNode) tree.node(leafs[k] + i))._pred = gf;
@@ -374,12 +371,10 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
       double _rss[/*tree/klass*/][/*tree-relative node-id*/];
       // Per leaf: multinomial: sum(|res|*1-|res|), gaussian: sum(1), bernoulli: sum((y-res)*(1-y+res))
       double _gss[/*tree/klass*/][/*tree-relative node-id*/];
-      int _cts[/*tree/klass*/][/*tree-relative node-id*/];
       GammaPass(DTree trees[], int leafs[], boolean isBernoulli) { _leafs=leafs; _trees=trees; _isBernoulli = isBernoulli; }
       @Override public void map( Chunk[] chks ) {
         _gss = new double[_nclass][];
         _rss = new double[_nclass][];
-        _cts = new int   [_nclass][];
         final Chunk resp = chk_resp(chks); // Response for this frame
 
         // For all tree/klasses
@@ -391,7 +386,6 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
           // A leaf-biased array of all active Tree leaves.
           final double gs[] = _gss[k] = new double[tree._len-leaf];
           final double rs[] = _rss[k] = new double[tree._len-leaf];
-          final int    cs[] = _cts[k] = new int   [tree._len-leaf];
           final Chunk nids = chk_nids(chks,k); // Node-ids  for this tree/class
           final Chunk ress = chk_work(chks,k); // Residuals for this tree/class
 
@@ -406,8 +400,6 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
             DecidedNode dn = tree.decided(nid);           // Must have a decision point
             if( dn._split._col == -1 )                    // Unable to decide?
               dn = tree.decided(dn._pid);  // Then take parent's decision
-            if( k==418 && dn.nid()==3 )
-              System.out.println("CRUNK");
             int leafnid = dn.ns(chks,row); // Decide down to a leafnode
             assert leaf <= leafnid && leafnid < tree._len :
                     "leaf: " + leaf + " leafnid: " + leafnid + " tree._len: " + tree._len + "\ndn: " + dn;
@@ -422,22 +414,18 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
             // Compute numerator (rs) and denominator (gs) of gamma
             double res = ress.atd(row);
             double ares = Math.abs(res);
-            if( ares > 1.0 )
-              throw H2O.unimpl();
             if( _isBernoulli ) {
               double prob = resp.atd(row) - res;
               gs[leafnid-leaf] += prob*(1-prob);
             } else
               gs[leafnid-leaf] += _nclass > 1 ? ares*(1-ares) : 1;
             rs[leafnid-leaf] += res;
-            cs[leafnid-leaf] += 1;
           }
         }
       }
       @Override public void reduce( GammaPass gp ) {
         ArrayUtils.add(_gss,gp._gss);
         ArrayUtils.add(_rss,gp._rss);
-        ArrayUtils.add(_cts,gp._cts);
       }
     }
 
@@ -517,10 +505,11 @@ public class GBM extends SharedTree<GBMModel,GBMModel.GBMParameters,GBMModel.GBM
       fs[2] = 1.0/fs[1]; // exp(-d) === 1/exp(d)
       return fs[1]+fs[2];
     }
-    double sum=0;
-    for( int k=0; k<_nclass; k++ ) // Sum across of likelyhoods
-      sum+=(fs[k+1]=Math.exp(chk_tree(chks,k).atd(row)));
-    return sum;
+    // Multinomial loss function; sum(exp(data)).  Load tree data
+    for( int k=0; k<_nclass; k++ ) 
+      fs[k+1]=chk_tree(chks,k).atd(row);
+    // Rescale to avoid Infinities; return sum(exp(data))
+    return hex.genmodel.GenModel.log_rescale(fs);
   }
 
 }

@@ -251,10 +251,8 @@ public class DTree extends Iced {
       if( _pid == -1 ) return; // skip root
       DecidedNode dn = _tree.decided(_pid);
       for( int i=0; i<dn._nids.length; i++ )
-        if( dn._nids[i]==_nid ) {
-          dn._nids[i] = -1;
-          return;
-        }
+        if( dn._nids[i]==_nid ) 
+          { dn._nids[i] = -1; return; }
       throw H2O.fail();
     }
 
